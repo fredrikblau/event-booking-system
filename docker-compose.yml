@@ -1,0 +1,53 @@
+x-app: &app
+  build: .
+  environment:
+    POSTGRES_HOST: db
+    CELERY_BROKER_URL: redis://redis:6379/0
+
+x-after-migrate: &after-migrate
+  migrate:
+    condition: service_completed_successfully
+  redis:
+    condition: service_started
+
+services:
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: booking
+      POSTGRES_USER: booking
+      POSTGRES_PASSWORD: booking
+    healthcheck:
+      # -h localhost: during first-time init postgres only listens on the unix socket,
+      # so without it the check can pass before the other containers can connect
+      test: ["CMD", "pg_isready", "-U", "booking", "-h", "localhost"]
+      interval: 2s
+      retries: 15
+
+  redis:
+    image: redis:7
+
+  # runs once; web, worker and beat start only after the tables exist
+  migrate:
+    <<: *app
+    command: python manage.py migrate
+    depends_on:
+      db:
+        condition: service_healthy
+
+  web:
+    <<: *app
+    command: python manage.py runserver 0.0.0.0:8000
+    ports:
+      - "8000:8000"
+    depends_on: *after-migrate
+
+  worker:
+    <<: *app
+    command: celery -A config worker -l info
+    depends_on: *after-migrate
+
+  beat:
+    <<: *app
+    command: celery -A config beat -l info
+    depends_on: *after-migrate
